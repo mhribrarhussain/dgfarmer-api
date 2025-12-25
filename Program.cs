@@ -93,7 +93,8 @@ builder.Services.AddCors(options =>
         policy.WithOrigins(
                 "http://localhost:4200",
                 "https://localhost:4200",
-                "https://*.netlify.app" // Netlify deployments
+                "https://dgfarmer.netlify.app", // Netlify frontend
+                "https://*.netlify.app" // Other Netlify previews
             )
             .AllowAnyHeader()
             .AllowAnyMethod()
