@@ -130,3 +130,22 @@ public class OrderItemDetailDto
     public int Quantity { get; set; }
     public decimal Price { get; set; }
 }
+
+// Message DTOs
+public class MessageDto
+{
+    public int Id { get; set; }
+    public int OrderId { get; set; }
+    public int SenderId { get; set; }
+    public string SenderName { get; set; } = string.Empty;
+    public string SenderRole { get; set; } = string.Empty;
+    public string Content { get; set; } = string.Empty;
+    public DateTime CreatedAt { get; set; }
+}
+
+public class SendMessageDto
+{
+    [Required]
+    [MaxLength(1000)]
+    public string Content { get; set; } = string.Empty;
+}

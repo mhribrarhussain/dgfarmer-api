@@ -93,57 +93,73 @@ public class OrdersController : ControllerBase
         if (farmerId == null) return Unauthorized();
 
         // Get all orders that contain products from this farmer
-        // Note: This is a simplified approach. In a real app, you might want to return only the items belonging to the farmer.
-        // For this MVP, we will return the full order but strictly filtered.
-        
-        // This query fetches orders where at least one item belongs to the logged-in farmer
         var orders = await _db.Orders
-            .Include(o => o.User) // Buyer details
+            .Include(o => o.User)
             .Include(o => o.OrderItems)
             .ThenInclude(oi => oi.Product)
             .Where(o => o.OrderItems.Any(oi => oi.Product.FarmerId == farmerId))
             .OrderByDescending(o => o.CreatedAt)
             .ToListAsync();
 
-        var response = orders.Select(o => new OrderResponseDto
+        var response = new List<OrderResponseDto>();
+
+        foreach (var o in orders)
         {
-            Id = o.Id,
-            Status = o.Status,
-            Total = o.Total,
-            ShippingAddress = o.ShippingAddress,
-            CustomerNote = o.CustomerNote,
-            CreatedAt = o.CreatedAt,
-            // Only include items that belong to this farmer
-            Items = o.OrderItems
-                .Where(oi => oi.Product.FarmerId == farmerId)
-                .Select(oi => new OrderItemDetailDto
+            // Filter to only items belonging to this farmer
+            var farmerItems = o.OrderItems
+                .Where(oi => oi.Product != null && oi.Product.FarmerId == farmerId)
+                .ToList();
+
+            if (farmerItems.Count == 0) continue;
+
+            // Calculate subtotal for this farmer's items only
+            var farmerSubtotal = farmerItems.Sum(oi => oi.Price * oi.Quantity);
+
+            response.Add(new OrderResponseDto
+            {
+                Id = o.Id,
+                Status = o.Status,
+                Total = farmerSubtotal, // Only this farmer's portion
+                ShippingAddress = o.ShippingAddress,
+                CustomerNote = o.CustomerNote,
+                CreatedAt = o.CreatedAt,
+                Items = farmerItems.Select(oi => new OrderItemDetailDto
                 {
                     ProductId = oi.ProductId,
                     ProductName = oi.Product.Name,
                     Quantity = oi.Quantity,
                     Price = oi.Price
                 }).ToList()
-        }).ToList();
+            });
+        }
 
         return Ok(response);
     }
     
-    // POST: api/orders
+    // POST: api/orders (Buyers only - farmers cannot place orders)
+    // Creates separate orders for each farmer's products
     [HttpPost]
-    public async Task<ActionResult<OrderResponseDto>> CreateOrder(CreateOrderDto dto)
+    public async Task<ActionResult<List<OrderResponseDto>>> CreateOrder(CreateOrderDto dto)
     {
         var userId = _authService.GetUserIdFromToken(User);
         if (userId == null) return Unauthorized();
         
-        // Get products and calculate total
+        // Check if user is a farmer - farmers cannot place orders
+        var user = await _db.Users.FindAsync(userId);
+        if (user == null) return Unauthorized();
+        if (user.Role.ToLower() == "farmer")
+        {
+            return BadRequest(new { message = "Farmers cannot place orders. Please use a buyer account." });
+        }
+        
+        // Get products and validate
         var productIds = dto.Items.Select(i => i.ProductId).ToList();
         var products = await _db.Products
+            .Include(p => p.Farmer)
             .Where(p => productIds.Contains(p.Id))
             .ToDictionaryAsync(p => p.Id);
             
-        decimal total = 0;
-        var orderItems = new List<OrderItem>();
-        
+        // Validate stock before creating orders
         foreach (var item in dto.Items)
         {
             if (!products.TryGetValue(item.ProductId, out var product))
@@ -155,72 +171,118 @@ public class OrdersController : ControllerBase
             {
                 return BadRequest(new { message = $"Not enough stock for {product.Name}" });
             }
-            
-            var itemTotal = product.Price * item.Quantity;
-            total += itemTotal;
-            
-            orderItems.Add(new OrderItem
-            {
-                ProductId = item.ProductId,
-                Quantity = item.Quantity,
-                Price = product.Price
-            });
-            
-            // Reduce stock
-            product.Stock -= item.Quantity;
         }
         
-        var order = new Order
-        {
-            UserId = userId.Value,
-            Total = total,
-            ShippingAddress = dto.ShippingAddress,
-            Phone = dto.Phone,
-            CustomerNote = dto.Note,
-            OrderItems = orderItems
-        };
+        // Group items by farmer
+        var itemsByFarmer = dto.Items
+            .GroupBy(item => products[item.ProductId].FarmerId)
+            .ToList();
         
-        _db.Orders.Add(order);
-        await _db.SaveChangesAsync();
+        var createdOrders = new List<OrderResponseDto>();
         
-        return CreatedAtAction(nameof(GetOrder), new { id = order.Id }, new OrderResponseDto
+        // Create separate order for each farmer
+        foreach (var farmerGroup in itemsByFarmer)
         {
-            Id = order.Id,
-            Status = order.Status,
-            Total = order.Total,
-            ShippingAddress = order.ShippingAddress,
-            CreatedAt = order.CreatedAt,
-            Items = orderItems.Select(oi => new OrderItemDetailDto
+            var farmerOrderItems = new List<OrderItem>();
+            decimal farmerTotal = 0;
+            
+            foreach (var item in farmerGroup)
             {
-                ProductId = oi.ProductId,
-                ProductName = products[oi.ProductId].Name,
-                Quantity = oi.Quantity,
-                Price = oi.Price
-            }).ToList()
-        });
+                var product = products[item.ProductId];
+                var itemTotal = product.Price * item.Quantity;
+                farmerTotal += itemTotal;
+                
+                farmerOrderItems.Add(new OrderItem
+                {
+                    ProductId = item.ProductId,
+                    Quantity = item.Quantity,
+                    Price = product.Price
+                });
+                
+                // Reduce stock
+                product.Stock -= item.Quantity;
+            }
+            
+            var order = new Order
+            {
+                UserId = userId.Value,
+                Total = farmerTotal,
+                ShippingAddress = dto.ShippingAddress,
+                Phone = dto.Phone,
+                CustomerNote = dto.Note,
+                OrderItems = farmerOrderItems
+            };
+            
+            _db.Orders.Add(order);
+            await _db.SaveChangesAsync();
+            
+            createdOrders.Add(new OrderResponseDto
+            {
+                Id = order.Id,
+                Status = order.Status,
+                Total = order.Total,
+                ShippingAddress = order.ShippingAddress,
+                CreatedAt = order.CreatedAt,
+                Items = farmerOrderItems.Select(oi => new OrderItemDetailDto
+                {
+                    ProductId = oi.ProductId,
+                    ProductName = products[oi.ProductId].Name,
+                    Quantity = oi.Quantity,
+                    Price = oi.Price
+                }).ToList()
+            });
+        }
+        
+        return Ok(createdOrders);
     }
     
-    // PUT: api/orders/5/status (Farmer only - update order status)
-    [HttpPut("{id}/status")]
+    // POST: api/orders/5/accept (Farmer only - accept order)
+    [HttpPost("{id}/accept")]
     [Authorize(Roles = "farmer")]
-    public async Task<IActionResult> UpdateStatus(int id, [FromBody] string status)
+    public async Task<IActionResult> AcceptOrder(int id)
     {
         var order = await _db.Orders.FindAsync(id);
         if (order == null) return NotFound();
         
-        var validStatuses = new[] { "pending", "processing", "delivered", "cancelled" };
-        if (!validStatuses.Contains(status.ToLower()))
-        {
-            return BadRequest(new { message = "Invalid status" });
-        }
-        
-        order.Status = status.ToLower();
-        if (status.ToLower() == "delivered")
-        {
-            order.DeliveredAt = DateTime.UtcNow;
-        }
-        
+        order.Status = "accepted";
         await _db.SaveChangesAsync();
-        return NoContent();
+        return Ok(new { message = "Order accepted" });
+    }
+    
+    // POST: api/orders/5/reject (Farmer only - reject order)
+    [HttpPost("{id}/reject")]
+    [Authorize(Roles = "farmer")]
+    public async Task<IActionResult> RejectOrder(int id)
+    {
+        var order = await _db.Orders.FindAsync(id);
+        if (order == null) return NotFound();
+        
+        order.Status = "rejected";
+        await _db.SaveChangesAsync();
+        return Ok(new { message = "Order rejected" });
+    }
+    
+    // POST: api/orders/5/cancel (Consumer only - cancel their own pending order)
+    [HttpPost("{id}/cancel")]
+    [Authorize]
+    public async Task<IActionResult> CancelOrder(int id)
+    {
+        var userId = _authService.GetUserIdFromToken(User);
+        if (userId == null) return Unauthorized();
+        
+        var order = await _db.Orders.FindAsync(id);
+        if (order == null) return NotFound();
+        
+        // Only order owner can cancel
+        if (order.UserId != userId)
+            return Forbid();
+        
+        // Can only cancel pending orders
+        if (order.Status != "pending")
+            return BadRequest(new { message = "Only pending orders can be cancelled" });
+        
+        order.Status = "cancelled";
+        await _db.SaveChangesAsync();
+        return Ok(new { message = "Order cancelled" });
     }
 }

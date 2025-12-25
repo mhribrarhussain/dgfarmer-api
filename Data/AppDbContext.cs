@@ -11,6 +11,7 @@ public class AppDbContext : DbContext
     public DbSet<Product> Products => Set<Product>();
     public DbSet<Order> Orders => Set<Order>();
     public DbSet<OrderItem> OrderItems => Set<OrderItem>();
+    public DbSet<Message> Messages => Set<Message>();
     
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -46,6 +47,19 @@ public class AppDbContext : DbContext
             .HasOne(oi => oi.Product)
             .WithMany()
             .HasForeignKey(oi => oi.ProductId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        // Message relationships
+        modelBuilder.Entity<Message>()
+            .HasOne(m => m.Order)
+            .WithMany()
+            .HasForeignKey(m => m.OrderId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        modelBuilder.Entity<Message>()
+            .HasOne(m => m.Sender)
+            .WithMany()
+            .HasForeignKey(m => m.SenderId)
             .OnDelete(DeleteBehavior.Restrict);
             
         // Seed sample data
