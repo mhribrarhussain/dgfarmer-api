@@ -93,8 +93,7 @@ builder.Services.AddCors(options =>
         policy.WithOrigins(
                 "http://localhost:4200",
                 "https://localhost:4200",
-                "https://dgfarmer.netlify.app", // Netlify frontend
-                "https://*.netlify.app" // Other Netlify previews
+                "https://*.netlify.app" // Netlify deployments
             )
             .AllowAnyHeader()
             .AllowAnyMethod()
@@ -120,13 +119,10 @@ using (var scope = app.Services.CreateScope())
 }
 
 // Configure the HTTP request pipeline
-// Configure the HTTP request pipeline
-// Enable Swagger in all environments
-app.UseSwagger();
-app.UseSwaggerUI();
-
 if (app.Environment.IsDevelopment())
 {
+    app.UseSwagger();
+    app.UseSwaggerUI();
     app.UseCors("AllowAll");
 }
 else
